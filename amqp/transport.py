@@ -36,6 +36,35 @@ DEFAULT_SOCKET_SETTINGS = {
     'TCP_KEEPCNT': 9,
 }
 
+import linecache
+import os
+import tracemalloc
+
+def display_top(snapshot, key_type='lineno', limit=10):
+    snapshot = snapshot.filter_traces((
+        tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+        tracemalloc.Filter(False, "<unknown>"),
+    ))
+    top_stats = snapshot.statistics(key_type)
+
+    print("Top %s lines" % limit)
+    for index, stat in enumerate(top_stats[:limit], 1):
+        frame = stat.traceback[0]
+        print("#%s: %s:%s: %.1f KiB"
+              % (index, frame.filename, frame.lineno, stat.size / 1024))
+        line = linecache.getline(frame.filename, frame.lineno).strip()
+        if line:
+            print('    %s' % line)
+
+    other = top_stats[limit:]
+    if other:
+        size = sum(stat.size for stat in other)
+        print("%s other: %.1f KiB" % (len(other), size / 1024))
+    total = sum(stat.size for stat in top_stats)
+    print("Total allocated size: %.1f KiB" % (total / 1024))
+
+tracemalloc.start()
+
 
 def to_host_port(host, default=AMQP_PORT):
     """Convert hostname:port string to host, port tuple."""
@@ -272,13 +301,19 @@ class _AbstractTransport:
 
     def close(self):
         if self.sock is not None:
-            self._shutdown_transport()
-            # Call shutdown first to make sure that pending messages
-            # reach the AMQP broker if the program exits after
-            # calling this method.
-            self.sock.shutdown(socket.SHUT_RDWR)
-            self.sock.close()
+            try:
+                self._shutdown_transport()
+                # Call shutdown first to make sure that pending messages
+                # reach the AMQP broker if the program exits after
+                # calling this method.
+                self.sock.shutdown(socket.SHUT_RDWR)
+                self.sock.close()
+            except OSError:
+                pass
             self.sock = None
+
+        snapshot = tracemalloc.take_snapshot()
+        display_top(snapshot)
         self.connected = False
 
     def read_frame(self, unpack=unpack):
